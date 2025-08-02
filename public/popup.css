@@ -1,0 +1,168 @@
+body {
+    width: 300px;
+    margin: 0;
+    padding: 0;
+    font-family:
+        "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans",
+        "Droid Sans", "Helvetica Neue", sans-serif;
+    background-color: #f8fafc;
+    color: #334155;
+    line-height: 1.5;
+}
+
+.container {
+    padding: 16px;
+    background: #ffffff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+    margin: 0 0 16px 0;
+    font-size: 18px;
+    font-weight: 600;
+    text-align: center;
+    color: #475569;
+}
+
+.status {
+    margin-bottom: 16px;
+    text-align: center;
+}
+
+.connected {
+    display: inline-block;
+    color: #047857;
+    background-color: #d1fae5;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid #a7f3d0;
+}
+.disconnected {
+    display: inline-block;
+    color: #64748b;
+    background-color: #f1f5f9;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid #e2e8f0;
+}
+.error {
+    display: inline-block;
+    color: #dc2626;
+    background-color: #fee2e2;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid #fca5a5;
+}
+
+.content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.info {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.info p {
+    margin: 4px 0;
+}
+
+.info code {
+    background: #e0e7ff;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #4338ca;
+}
+
+.btn {
+    padding: 10px 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.btn-primary {
+    background: #10b981;
+    color: white;
+    border-color: #10b981;
+}
+
+.btn-primary:hover {
+    background: #059669;
+    border-color: #059669;
+}
+
+.btn-secondary {
+    background: #f8fafc;
+    color: #475569;
+    border-color: #d1d5db;
+}
+
+.btn-secondary:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+}
+
+.btn-danger {
+    background: #ef4444;
+    color: white;
+    border-color: #ef4444;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+    border-color: #dc2626;
+}
+
+.divider {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 12px;
+    margin: 8px 0;
+}
+
+input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 14px;
+    box-sizing: border-box;
+    background: #ffffff;
+    transition: border-color 0.2s ease;
+}
+
+input[type="text"]:focus {
+    outline: none;
+    border-color: #10b981;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.1);
+}
+
+a {
+    color: #3b82f6;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+a:hover {
+    color: #1d4ed8;
+    text-decoration: underline;
+}

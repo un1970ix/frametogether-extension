@@ -1,0 +1,29 @@
+{
+  "name": "frametogether-extension",
+  "version": "1.0.0",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun build.ts && bun --watch build.ts",
+    "build": "bun build.ts",
+    "build:firefox": "TARGET=firefox bun build.ts",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.19",
+    "@types/webextension-polyfill": "^0.12.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "webextension-polyfill": "^0.12.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/un1970ix/frametogether-extension.git"
+  },
+  "license": "MPL-2.0",
+  "author": "Bedir Ekim <root@un1970ix.com> (https://un1970ix.com)"
+}

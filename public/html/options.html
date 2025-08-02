@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <link rel="stylesheet" href="../options.css" />
+    </head>
+    <body>
+        <div class="container">
+            <h1>FrameTogether Options</h1>
+            <div class="form-group">
+                <label for="serverUrl">Server URL</label>
+                <input
+                    type="text"
+                    id="serverUrl"
+                    placeholder="wss://frametogether.19702038.xyz"
+                />
+                <small>Use the default hosted server, or enter your own.</small>
+            </div>
+            <div class="buttons">
+                <button id="saveBtn">Save</button>
+                <button id="defaultBtn">Use Default</button>
+            </div>
+            <div id="status"></div>
+        </div>
+        <script src="../options/index.js" type="module"></script>
+    </body>
+</html>
