@@ -49,66 +49,131 @@ class PopupUI {
       return;
     }
 
+    status.className = "status";
+    status.textContent = "";
+    content.textContent = "";
+
     if (!this.config.serverUrl) {
-      status.className = "status";
-      status.innerHTML = '<span class="error">⚠️ No server configured.</span>';
-      content.innerHTML = `
-        <p>Please configure a server in the <a href="#" id="optionsLink">options</a>.</p>
-      `;
-      document.getElementById("optionsLink")?.addEventListener("click", () => {
+      const errorSpan = document.createElement("span");
+      errorSpan.className = "error";
+      errorSpan.textContent = "⚠️ No server configured.";
+      status.appendChild(errorSpan);
+
+      const p = document.createElement("p");
+      p.textContent = "Please configure a server in the ";
+
+      const optionsLink = document.createElement("a");
+      optionsLink.href = "#";
+      optionsLink.textContent = "options";
+      optionsLink.addEventListener("click", (e) => {
+        e.preventDefault();
         browser.runtime.openOptionsPage();
       });
+
+      p.appendChild(optionsLink);
+      p.appendChild(document.createTextNode("."));
+      content.appendChild(p);
       return;
     }
 
     if (this.connected && this.config.roomId) {
-      status.className = "status";
-      status.innerHTML = '<span class="connected">🟢 Connected.</span>';
-      content.innerHTML = `
-        <div class="info">
-          <p><strong>Room:</strong> <code>${this.config.roomId}</code></p>
-          <p><strong>You are:</strong> ${this.config.userName || "Unknown"}</p>
-          <p><strong>Role:</strong> ${this.config.isHost ? "Host" : "Viewer"}</p>
-        </div>
-        <button id="leaveBtn" class="btn btn-danger">Leave Room</button>
-        <button id="copyBtn" class="btn btn-secondary">Copy Room ID</button>
-      `;
+      const connectedSpan = document.createElement("span");
+      connectedSpan.className = "connected";
+      connectedSpan.textContent = "🟢 Connected.";
+      status.appendChild(connectedSpan);
 
-      document.getElementById("leaveBtn")?.addEventListener("click", () => {
+      const infoDiv = document.createElement("div");
+      infoDiv.className = "info";
+
+      const roomP = document.createElement("p");
+      const roomStrong = document.createElement("strong");
+      roomStrong.textContent = "Room:";
+      const roomCode = document.createElement("code");
+      roomCode.textContent = this.config.roomId || "";
+      roomP.appendChild(roomStrong);
+      roomP.appendChild(document.createTextNode(" "));
+      roomP.appendChild(roomCode);
+      infoDiv.appendChild(roomP);
+
+      const userP = document.createElement("p");
+      const userStrong = document.createElement("strong");
+      userStrong.textContent = "You are:";
+      userP.appendChild(userStrong);
+      userP.appendChild(
+        document.createTextNode(" " + (this.config.userName || "Unknown")),
+      );
+      infoDiv.appendChild(userP);
+
+      const roleP = document.createElement("p");
+      const roleStrong = document.createElement("strong");
+      roleStrong.textContent = "Role:";
+      roleP.appendChild(roleStrong);
+      roleP.appendChild(
+        document.createTextNode(" " + (this.config.isHost ? "Host" : "Viewer")),
+      );
+      infoDiv.appendChild(roleP);
+
+      content.appendChild(infoDiv);
+
+      const leaveBtn = document.createElement("button");
+      leaveBtn.id = "leaveBtn";
+      leaveBtn.className = "btn btn-danger";
+      leaveBtn.textContent = "Leave Room";
+      leaveBtn.addEventListener("click", () => {
         this.port.postMessage({ type: "LEAVE_ROOM" });
       });
+      content.appendChild(leaveBtn);
 
-      document
-        .getElementById("copyBtn")
-        ?.addEventListener("click", async () => {
-          await navigator.clipboard.writeText(this.config.roomId);
-          const btn = document.getElementById("copyBtn") as HTMLButtonElement;
-          btn.textContent = "Copied!";
-          setTimeout(() => {
-            btn.textContent = "Copy Room ID";
-          }, 1500);
-        });
+      const copyBtn = document.createElement("button");
+      copyBtn.id = "copyBtn";
+      copyBtn.className = "btn btn-secondary";
+      copyBtn.textContent = "Copy Room ID";
+      copyBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(this.config.roomId);
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy Room ID";
+        }, 1500);
+      });
+      content.appendChild(copyBtn);
     } else {
-      status.className = "status";
-      status.innerHTML = '<span class="disconnected">⚪ Not connected.</span>';
-      content.innerHTML = `
-        <button id="createBtn" class="btn btn-primary">Create Room</button>
-        <div class="divider">or</div>
-        <input type="text" id="roomInput" placeholder="Enter room ID." maxlength="6">
-        <button id="joinBtn" class="btn btn-secondary">Join Room</button>
-      `;
+      const disconnectedSpan = document.createElement("span");
+      disconnectedSpan.className = "disconnected";
+      disconnectedSpan.textContent = "⚪ Not connected.";
+      status.appendChild(disconnectedSpan);
 
-      document.getElementById("createBtn")?.addEventListener("click", () => {
+      const createBtn = document.createElement("button");
+      createBtn.id = "createBtn";
+      createBtn.className = "btn btn-primary";
+      createBtn.textContent = "Create Room";
+      createBtn.addEventListener("click", () => {
         this.port.postMessage({ type: "CREATE_ROOM" });
       });
+      content.appendChild(createBtn);
 
-      document.getElementById("joinBtn")?.addEventListener("click", () => {
-        const input = document.getElementById("roomInput") as HTMLInputElement;
-        const roomId = input.value.trim();
+      const divider = document.createElement("div");
+      divider.className = "divider";
+      divider.textContent = "or";
+      content.appendChild(divider);
+
+      const roomInput = document.createElement("input");
+      roomInput.type = "text";
+      roomInput.id = "roomInput";
+      roomInput.placeholder = "Enter room ID.";
+      roomInput.maxLength = 6;
+      content.appendChild(roomInput);
+
+      const joinBtn = document.createElement("button");
+      joinBtn.id = "joinBtn";
+      joinBtn.className = "btn btn-secondary";
+      joinBtn.textContent = "Join Room";
+      joinBtn.addEventListener("click", () => {
+        const roomId = roomInput.value.trim();
         if (roomId) {
           this.port.postMessage({ type: "JOIN_ROOM", roomId });
         }
       });
+      content.appendChild(joinBtn);
     }
   }
 
@@ -117,9 +182,25 @@ class PopupUI {
     const content = document.getElementById("content")!;
 
     status.className = "status";
-    status.innerHTML = '<span class="error">📺 Not on MUBI.</span>';
-    content.innerHTML =
-      '<p>Please navigate to <a href="https://mubi.com" target="_blank">mubi.com</a> to use FrameTogether.</p>';
+    status.textContent = "";
+    content.textContent = "";
+
+    const errorSpan = document.createElement("span");
+    errorSpan.className = "error";
+    errorSpan.textContent = "📺 Not on MUBI.";
+    status.appendChild(errorSpan);
+
+    const p = document.createElement("p");
+    p.textContent = "Please navigate to ";
+
+    const link = document.createElement("a");
+    link.href = "https://mubi.com";
+    link.target = "_blank";
+    link.textContent = "mubi.com";
+
+    p.appendChild(link);
+    p.appendChild(document.createTextNode(" to use FrameTogether."));
+    content.appendChild(p);
   }
 }
 
