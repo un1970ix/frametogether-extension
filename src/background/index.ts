@@ -1,213 +1,276 @@
 import browser from "webextension-polyfill";
-import type { MessageType, SyncConfig, VideoState } from "../shared/types";
+import {
+  isMubiUrl,
+  isPlaybackTime,
+  isVideoState,
+  MAX_ROOM_ID_LENGTH,
+  normalizeServerUrl,
+  parseServerMessage,
+  type MessageType,
+  type ServerMessage,
+  type SyncConfig,
+} from "../shared/types";
+import { isTrustedPort } from "./ports";
+
+const SESSION_KEY = "frametogether-extension:session";
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 60_000;
+const HEARTBEAT_MS = 15_000;
+
+const storageArea = () => browser.storage.session ?? browser.storage.local;
+
+interface SessionState {
+  roomId?: string;
+  isHost?: boolean;
+  userName?: string;
+}
 
 class SyncManager {
   private ws: WebSocket | null = null;
   private config: SyncConfig | null = null;
-  private reconnectTimer: number | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private activeTabId: number | null = null;
-  private heartbeatTimer: number | null = null;
-  private lastVideoState: VideoState | null = null;
+  private deliberateClose = false;
+  private pendingCreate = false;
 
   constructor() {
-    this.init();
+    void this.init();
   }
 
   private async init() {
     const saved = await browser.storage.sync.get(["serverUrl"]);
-    if (saved.serverUrl && typeof saved.serverUrl === "string") {
-      this.config = { serverUrl: saved.serverUrl };
+    if (typeof saved.serverUrl === "string") {
+      const parsed = normalizeServerUrl(saved.serverUrl);
+      if (parsed.ok) this.config = { serverUrl: parsed.url };
+    }
+
+    const session = await this.loadSession();
+    if (this.config && session?.roomId) {
+      this.config = { ...this.config, ...session };
     }
 
     browser.runtime.onMessage.addListener(
       (message: unknown, sender: browser.Runtime.MessageSender) => {
-        const msg = message as any;
-
-        if (msg.type === "TEST") {
-          return Promise.resolve({ status: "ok" });
-        }
-
-        if (msg.type === "VIDEO_STATE" && sender.tab?.id) {
-          this.activeTabId = sender.tab.id;
-          this.handleVideoState(msg.state);
-        }
+        const msg = message as { type?: unknown; state?: unknown } | null;
+        if (msg?.type === "TEST") return Promise.resolve({ status: "ok" });
+        if (msg?.type === "VIDEO_STATE") this.receiveVideoState(msg.state, sender);
         return Promise.resolve();
       },
     );
 
     browser.runtime.onConnect.addListener((port) => {
-      port.onMessage.addListener((msg) => {
-        this.handleCommand(msg, port);
-      });
+      if (!isTrustedPort(port, browser.runtime.id)) {
+        port.disconnect();
+        return;
+      }
+      port.onMessage.addListener((msg) => void this.handleCommand(msg, port));
     });
+
+    if (this.config?.roomId) this.connect();
   }
 
-  private handleCommand(msg: any, port: browser.Runtime.Port) {
+  private receiveVideoState(
+    state: unknown,
+    sender: browser.Runtime.MessageSender,
+  ) {
+    if (sender.tab?.id === undefined || !isMubiUrl(sender.tab.url)) return;
+    if (!isVideoState(state)) return;
+
+    this.activeTabId = sender.tab.id;
+    if (this.config?.isHost) {
+      this.send({ type: "State", time: state.time, paused: state.paused });
+    }
+  }
+
+  private async loadSession(): Promise<SessionState | null> {
+    try {
+      const stored = await storageArea().get([SESSION_KEY]);
+      const raw = stored[SESSION_KEY];
+      return typeof raw === "object" && raw !== null
+        ? (raw as SessionState)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async saveSession() {
+    try {
+      const area = storageArea();
+      if (!this.config?.roomId) {
+        await area.remove([SESSION_KEY]);
+        return;
+      }
+      await area.set({
+        [SESSION_KEY]: {
+          roomId: this.config.roomId,
+          isHost: this.config.isHost,
+          userName: this.config.userName,
+        } satisfies SessionState,
+      });
+    } catch {
+      return;
+    }
+  }
+
+  private async handleCommand(raw: unknown, port: browser.Runtime.Port) {
+    if (typeof raw !== "object" || raw === null) return;
+    const msg = raw as { type?: unknown; roomId?: unknown; url?: unknown };
+
     switch (msg.type) {
       case "CREATE_ROOM":
         this.createRoom();
         break;
       case "JOIN_ROOM":
-        this.joinRoom(msg.roomId);
+        if (typeof msg.roomId === "string") this.joinRoom(msg.roomId);
         break;
       case "LEAVE_ROOM":
-        this.disconnect();
+        await this.leaveRoom();
         break;
       case "GET_STATUS":
         port.postMessage({
           type: "STATUS",
-          connected: this.ws?.readyState === WebSocket.OPEN,
+          connected: this.isOpen(),
           config: this.config,
         });
         break;
       case "SET_SERVER":
-        this.setServer(msg.url);
+        if (typeof msg.url === "string") await this.setServer(msg.url);
         break;
     }
   }
 
   private async setServer(url: string) {
-    this.config = { serverUrl: url };
-    await browser.storage.sync.set({ serverUrl: url });
-    this.disconnect();
+    const parsed = normalizeServerUrl(url);
+    if (!parsed.ok) {
+      this.broadcastError(parsed.error);
+      return;
+    }
+    await this.leaveRoom();
+    this.config = { serverUrl: parsed.url };
+    await browser.storage.sync.set({ serverUrl: parsed.url });
+    this.broadcastStatus();
+  }
+
+  private isOpen() {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  private send(payload: Record<string, unknown>) {
+    if (!this.isOpen()) return false;
+    this.ws!.send(JSON.stringify(payload));
+    return true;
   }
 
   private connect() {
     if (!this.config?.serverUrl) return;
-
-    try {
-      let wsUrl = this.config.serverUrl;
-      if (!wsUrl.endsWith("/")) {
-        wsUrl += "/";
-      }
-      wsUrl += "sync";
-
-      console.log("FrameTogether: Connecting to", wsUrl);
-      this.ws = new WebSocket(wsUrl);
-
-      this.ws.onopen = () => {
-        console.log("FrameTogether: Connected to server");
-        this.broadcastStatus();
-        this.startHeartbeat();
-
-        if (this.config?.roomId) {
-          setTimeout(() => {
-            if (this.ws?.readyState === WebSocket.OPEN) {
-              this.ws.send(
-                JSON.stringify({ type: "Join", room_id: this.config!.roomId }),
-              );
-            }
-          }, 100);
-        }
-      };
-
-      this.ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        console.log("FrameTogether: Received message", msg);
-        this.handleServerMessage(msg);
-      };
-
-      this.ws.onclose = () => {
-        console.log("FrameTogether: Disconnected");
-        this.stopHeartbeat();
-        this.broadcastStatus();
-        if (this.config?.roomId) {
-          this.scheduleReconnect();
-        }
-      };
-
-      this.ws.onerror = (error) => {
-        console.error("FrameTogether: WebSocket error", error);
-      };
-    } catch (error) {
-      console.error("FrameTogether: Failed to connect", error);
+    if (
+      this.ws?.readyState === WebSocket.OPEN ||
+      this.ws?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
     }
+
+    this.deliberateClose = false;
+
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(`${this.config.serverUrl}/sync`);
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
+    this.ws = socket;
+
+    socket.onopen = () => {
+      this.reconnectAttempts = 0;
+      this.startHeartbeat();
+      if (this.pendingCreate) {
+        this.pendingCreate = false;
+        this.send({ type: "Create" });
+      } else if (this.config?.roomId) {
+        this.send({ type: "Join", room_id: this.config.roomId });
+      }
+      this.broadcastStatus();
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      const msg = parseServerMessage(raw);
+      if (msg) void this.handleServerMessage(msg);
+    };
+
+    socket.onclose = () => {
+      this.stopHeartbeat();
+      if (this.ws === socket) this.ws = null;
+      this.broadcastStatus();
+      if (!this.deliberateClose && this.config?.roomId) this.scheduleReconnect();
+    };
   }
 
-  private disconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+  private async leaveRoom() {
+    this.deliberateClose = true;
+    this.pendingCreate = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
+
+    this.send({ type: "Leave" });
     this.stopHeartbeat();
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    if (this.config) {
-      this.config = {
-        serverUrl: this.config.serverUrl,
-        roomId: undefined,
-        isHost: undefined,
-        userName: undefined,
-      };
-    }
+    this.ws?.close();
+    this.ws = null;
+
+    if (this.config) this.config = { serverUrl: this.config.serverUrl };
+    await this.saveSession();
     this.broadcastStatus();
   }
 
   private scheduleReconnect() {
-    if (this.config?.roomId && !this.reconnectTimer) {
-      this.reconnectTimer = setTimeout(() => {
+    if (this.reconnectTimer || !this.config?.roomId) return;
+    const backoff = Math.min(
+      RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
+      RECONNECT_MAX_MS,
+    );
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(
+      () => {
         this.reconnectTimer = null;
         this.connect();
-      }, 3000) as any;
-    }
+      },
+      backoff / 2 + Math.random() * (backoff / 2),
+    );
   }
 
   private createRoom() {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "Create" }));
-    } else {
+    this.deliberateClose = false;
+    if (!this.send({ type: "Create" })) {
+      this.pendingCreate = true;
       this.connect();
-      setTimeout(() => {
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: "Create" }));
-        }
-      }, 500);
     }
   }
 
   private joinRoom(roomId: string) {
-    if (this.config) {
-      this.config = { ...this.config, roomId };
-    } else {
-      return;
-    }
+    if (!this.config) return;
+    const trimmed = roomId.trim();
+    if (!trimmed || trimmed.length > MAX_ROOM_ID_LENGTH) return;
 
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: "Join", room_id: roomId }));
-    } else {
-      this.connect();
-    }
+    this.config = { ...this.config, roomId: trimmed };
+    this.deliberateClose = false;
+    if (!this.send({ type: "Join", room_id: trimmed })) this.connect();
   }
 
-  private handleVideoState(state: VideoState) {
-    this.lastVideoState = state;
-
-    if (this.ws?.readyState === WebSocket.OPEN && this.config?.isHost) {
-      this.ws.send(
-        JSON.stringify({
-          type: "State",
-          time: state.time,
-          paused: state.paused,
-        }),
-      );
-    }
-  }
-
-  private handleServerMessage(msg: any) {
+  private async handleServerMessage(msg: ServerMessage) {
     switch (msg.type) {
       case "RoomCreated":
-        if (this.config) {
-          this.config = { ...this.config, roomId: msg.room_id };
-          if (this.ws?.readyState === WebSocket.OPEN) {
-            setTimeout(() => {
-              this.ws!.send(
-                JSON.stringify({ type: "Join", room_id: msg.room_id }),
-              );
-            }, 100);
-          }
-        }
+        if (this.config) this.config = { ...this.config, roomId: msg.room_id };
         break;
 
       case "RoomJoined":
@@ -219,50 +282,71 @@ class SyncManager {
             userName: msg.your_name,
           };
         }
+        await this.saveSession();
         this.broadcastStatus();
         break;
 
-      case "Sync":
-        if (!this.config?.isHost && this.activeTabId) {
-          browser.tabs.sendMessage(this.activeTabId, {
-            type: "APPLY_STATE",
-            state: { time: msg.time, paused: msg.paused },
-          } as MessageType);
+      case "HostChanged":
+        if (this.config?.userName === msg.user_name) {
+          this.config = { ...this.config, isHost: true };
+          await this.saveSession();
+          this.broadcastStatus();
         }
         break;
 
+      case "Sync":
+        if (!this.config?.isHost) await this.applyToTab(msg.time, msg.paused);
+        break;
+
       case "Error":
-        console.error("FrameTogether: Server error", msg.message);
+        this.broadcastError(msg.message);
+        break;
+
+      case "UserJoined":
+      case "UserLeft":
         this.broadcastStatus();
         break;
+    }
+  }
+
+  private async applyToTab(time: number, paused: boolean) {
+    if (this.activeTabId === null || !isPlaybackTime(time)) return;
+    try {
+      await browser.tabs.sendMessage(this.activeTabId, {
+        type: "APPLY_STATE",
+        state: { time, paused },
+      } as MessageType);
+    } catch {
+      this.activeTabId = null;
     }
   }
 
   private broadcastStatus() {
-    browser.runtime
-      .sendMessage({
-        type: "CONNECTION_STATUS",
-        connected: this.ws?.readyState === WebSocket.OPEN,
-        config: this.config,
-      } as MessageType)
-      .catch(() => {});
+    this.post({
+      type: "CONNECTION_STATUS",
+      connected: this.isOpen(),
+      config: this.config ?? undefined,
+    });
+  }
+
+  private broadcastError(message: string) {
+    this.post({ type: "ERROR", message });
+  }
+
+  private post(message: MessageType) {
+    browser.runtime.sendMessage(message).catch(() => {});
   }
 
   private startHeartbeat() {
     this.stopHeartbeat();
-
     this.heartbeatTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: "Heartbeat" }));
-      }
-    }, 15000) as any;
+      if (!this.send({ type: "Heartbeat" })) this.stopHeartbeat();
+    }, HEARTBEAT_MS);
   }
 
   private stopHeartbeat() {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 }
 
