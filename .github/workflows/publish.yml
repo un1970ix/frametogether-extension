@@ -11,6 +11,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: store-release
     env:
       CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
       CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
