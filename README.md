@@ -10,24 +10,41 @@ See the [LICENSE](LICENSE) file for details.
 
 See the [FrameTogether Server repository](https://github.com/un1970ix/frametogether-server) for a more detailed explanation.
 
+Version 2 requires frametogether-server 0.2.0 or later. It sends a `Leave` message on disconnect, which older servers do not handle.
+
 ## Build
 
+Install dependencies.
+
 ```bash
-# Install dependencies.
 bun install
+```
 
-# Build for Chrome.
+Build for Chrome.
+
+```bash
 bun run build
+```
 
-# Build for Firefox.
+Build for Firefox.
+
+```bash
 bun run build:firefox
 ```
 
 ## Development
 
+Start in watch mode.
+
 ```bash
-# Run this command to start in watch mode.
 bun run dev
 ```
 
-Load the `dist/` directory as unpacked extension.
+Load the `dist` directory as an unpacked extension.
+
+## Testing
+
+```bash
+bun run typecheck
+bun test
+```

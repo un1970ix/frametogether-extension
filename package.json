@@ -1,6 +1,6 @@
 {
   "name": "frametogether-extension",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "module": "index.ts",
   "type": "module",
   "private": true,
@@ -8,9 +8,12 @@
     "dev": "bun build.ts && bun --watch build.ts",
     "build": "bun build.ts",
     "build:firefox": "TARGET=firefox bun build.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.14.5",
     "@types/bun": "^1.2.19",
     "@types/webextension-polyfill": "^0.12.3"
   },
