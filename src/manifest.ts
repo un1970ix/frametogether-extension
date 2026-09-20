@@ -46,6 +46,10 @@ export function getManifest(target: "chrome" | "firefox") {
       gecko: {
         id: "{30f2dc41-70a7-41d8-84dd-4696e0bce483}",
         strict_min_version: "115.0",
+        data_collection_permissions: {
+          required: ["websiteActivity"],
+          optional: [],
+        },
       },
     },
   };
