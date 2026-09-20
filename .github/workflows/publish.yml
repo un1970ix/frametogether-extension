@@ -1,0 +1,113 @@
+name: Publish Extension
+
+on:
+  push:
+    tags: [ '*.*.*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+      CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+      CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+      CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set Up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Verify Tag Matches package.json
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          pkg="$(bun --print 'require("./package.json").version')"
+          if [ "${GITHUB_REF_NAME}" != "$pkg" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.json version $pkg"
+            exit 1
+          fi
+          echo "version $pkg"
+
+      - name: Build Chrome Package
+        run: |
+          set -euo pipefail
+          bun run build
+          (cd dist && zip -qr ../chrome.zip .)
+
+      - name: Build Firefox Package
+        run: |
+          set -euo pipefail
+          bun run build:firefox
+          (cd dist && zip -qr ../firefox.zip .)
+
+      - name: Lint Firefox Package
+        run: bun run lint:ext
+
+      - name: Publish to Chrome Web Store
+        if: env.CHROME_CLIENT_ID != ''
+        run: |
+          set -euo pipefail
+          token="$(curl -sf -X POST https://oauth2.googleapis.com/token \
+            -d client_id="$CHROME_CLIENT_ID" \
+            -d client_secret="$CHROME_CLIENT_SECRET" \
+            -d refresh_token="$CHROME_REFRESH_TOKEN" \
+            -d grant_type=refresh_token \
+            | bun --print 'JSON.parse(require("fs").readFileSync(0,"utf8")).access_token')"
+          if [ -z "$token" ] || [ "$token" = "undefined" ]; then
+            echo "could not obtain an access token"
+            exit 1
+          fi
+
+          upload="$(curl -sf -X PUT \
+            -H "Authorization: Bearer $token" \
+            -H "x-goog-api-version: 2" \
+            -T chrome.zip \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$CHROME_EXTENSION_ID")"
+          state="$(printf '%s' "$upload" | bun --print 'JSON.parse(require("fs").readFileSync(0,"utf8")).uploadState')"
+          echo "upload state $state"
+          if [ "$state" != "SUCCESS" ]; then
+            printf '%s\n' "$upload"
+            exit 1
+          fi
+
+          curl -sf -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$CHROME_EXTENSION_ID/publish"
+          echo "submitted to the Chrome Web Store"
+
+      - name: Skip Chrome Web Store
+        if: env.CHROME_CLIENT_ID == ''
+        run: echo "Chrome secrets are not configured, skipping"
+
+      - name: Publish to Firefox Add-ons
+        if: env.AMO_JWT_ISSUER != ''
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          bun run build:firefox
+          bun run sign:ext
+
+      - name: Skip Firefox Add-ons
+        if: env.AMO_JWT_ISSUER == ''
+        run: echo "AMO secrets are not configured, skipping"

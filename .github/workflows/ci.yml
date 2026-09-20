@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set Up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build Chrome
+        run: bun run build
+
+      - name: Build Firefox
+        run: bun run build:firefox
+
+      - name: Lint Against Add-ons Policy
+        run: bun run lint:ext

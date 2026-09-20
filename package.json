@@ -1,6 +1,6 @@
 {
   "name": "frametogether-extension",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "module": "index.ts",
   "type": "module",
   "private": true,
@@ -10,12 +10,15 @@
     "build:firefox": "TARGET=firefox bun build.ts",
     "clean": "rm -rf dist",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint:ext": "web-ext lint --source-dir=dist --warnings-as-errors=false",
+    "sign:ext": "web-ext sign --source-dir=dist --channel=listed --no-input"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.14.5",
     "@types/bun": "^1.2.19",
-    "@types/webextension-polyfill": "^0.12.3"
+    "@types/webextension-polyfill": "^0.12.3",
+    "web-ext": "^10.6.0"
   },
   "peerDependencies": {
     "typescript": "^5.8.3"
