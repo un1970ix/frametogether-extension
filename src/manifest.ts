@@ -42,15 +42,17 @@ export function getManifest(target: "chrome" | "firefox") {
   return {
     ...base,
     background: { scripts: ["background/index.js"], type: "module" },
+    content_security_policy: { extension_pages: "script-src 'self'" },
     browser_specific_settings: {
       gecko: {
         id: "{30f2dc41-70a7-41d8-84dd-4696e0bce483}",
-        strict_min_version: "115.0",
+        strict_min_version: "140.0",
         data_collection_permissions: {
           required: ["websiteActivity"],
           optional: [],
         },
       },
+      gecko_android: { strict_min_version: "142.0" },
     },
   };
 }
