@@ -61,7 +61,7 @@ class SyncManager {
     );
 
     browser.runtime.onConnect.addListener((port) => {
-      if (!isTrustedPort(port, browser.runtime.id)) {
+      if (!isTrustedPort(port, browser.runtime.id, browser.runtime.getURL(""))) {
         port.disconnect();
         return;
       }
