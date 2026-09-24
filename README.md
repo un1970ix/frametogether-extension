@@ -10,7 +10,7 @@ See the [LICENSE](LICENSE) file for details.
 
 See the [FrameTogether Server repository](https://github.com/un1970ix/frametogether-server) for a more detailed explanation.
 
-Version 2 requires frametogether-server 0.2.0 or later. It sends a `Leave` message on disconnect, which older servers do not handle.
+Version 2 requires frametogether-server 0.2.0 or later. It sends a `Leave` message when you leave a room, which older servers do not handle.
 
 ## Build
 
