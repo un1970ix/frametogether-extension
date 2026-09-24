@@ -5,8 +5,6 @@ const POLL_MS = 1_000;
 const SEEK_THRESHOLD_SECONDS = 2;
 const REPORT_THRESHOLD_SECONDS = 0.5;
 const APPLY_QUIET_MS = 500;
-const VIDEO_WAIT_ATTEMPTS = 60;
-const VIDEO_WAIT_MS = 500;
 const PLAYER_EVENTS = ["play", "pause", "seeked"] as const;
 
 class MubiController {
@@ -14,28 +12,16 @@ class MubiController {
   private lastState: VideoState | null = null;
   private applying = false;
   private applyTimer: ReturnType<typeof setTimeout> | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
   private connected = false;
-  private disposed = false;
 
   private readonly onPlayerEvent = () => {
     if (!this.applying) this.checkState();
   };
 
   constructor() {
-    void this.init();
-  }
-
-  private async init() {
-    this.video = await this.waitForVideo();
-    if (!this.video || this.disposed) return;
-
-    for (const event of PLAYER_EVENTS) {
-      this.video.addEventListener(event, this.onPlayerEvent);
-    }
-
     browser.runtime.onMessage.addListener((message: unknown) => {
       const msg = message as MessageType | null;
+      if (msg?.type === "GET_STATE") return Promise.resolve(this.readState());
       if (msg?.type === "APPLY_STATE" && isVideoState(msg.state)) {
         this.applyState(msg.state);
       }
@@ -43,23 +29,25 @@ class MubiController {
     });
 
     void this.checkConnection();
-    this.pollTimer = setInterval(() => this.checkState(), POLL_MS);
-    window.addEventListener("pagehide", () => this.dispose(), { once: true });
+    setInterval(() => this.poll(), POLL_MS);
   }
 
-  private dispose() {
-    this.disposed = true;
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    if (this.applyTimer) clearTimeout(this.applyTimer);
-    this.pollTimer = null;
-    this.applyTimer = null;
+  private poll() {
+    const video = document.querySelector("video");
+    if (video !== this.video) this.attach(video);
+    this.checkState();
+  }
+
+  private attach(video: HTMLVideoElement | null) {
     for (const event of PLAYER_EVENTS) {
       this.video?.removeEventListener(event, this.onPlayerEvent);
+      video?.addEventListener(event, this.onPlayerEvent);
     }
+    this.video = video;
+    this.lastState = null;
   }
 
   private async checkConnection() {
-    if (this.disposed) return;
     try {
       await browser.runtime.sendMessage({ type: "TEST" });
       this.connected = true;
@@ -69,40 +57,36 @@ class MubiController {
     }
   }
 
-  private async waitForVideo(): Promise<HTMLVideoElement | null> {
-    for (let i = 0; i < VIDEO_WAIT_ATTEMPTS && !this.disposed; i++) {
-      const video = document.querySelector("video");
-      if (video) return video;
-      await new Promise((r) => setTimeout(r, VIDEO_WAIT_MS));
-    }
-    return null;
+  private readState(): VideoState | null {
+    if (!this.video || !isPlaybackTime(this.video.currentTime)) return null;
+    return { time: this.video.currentTime, paused: this.video.paused };
   }
 
   private checkState() {
-    if (!this.video || this.applying || !this.connected) return;
+    if (this.applying || !this.connected) return;
 
-    const time = this.video.currentTime;
-    if (!isPlaybackTime(time)) return;
+    const state = this.readState();
+    if (!state) return;
 
-    const state: VideoState = { time, paused: this.video.paused };
+    const last = this.lastState;
     const drifted =
-      !this.lastState ||
-      Math.abs(state.time - this.lastState.time) > REPORT_THRESHOLD_SECONDS ||
-      state.paused !== this.lastState.paused;
+      !last ||
+      Math.abs(state.time - last.time) > REPORT_THRESHOLD_SECONDS ||
+      state.paused !== last.paused;
 
     if (drifted) {
       this.lastState = state;
-      void this.sendState(state);
+      void this.sendState(state, !last);
     }
   }
 
-  private async sendState(state: VideoState) {
-    if (!this.connected) return;
+  private async sendState(state: VideoState, fresh: boolean) {
     try {
       await browser.runtime.sendMessage({
         type: "VIDEO_STATE",
         state,
-      } as MessageType);
+        fresh,
+      } satisfies MessageType);
     } catch {
       this.connected = false;
       void this.checkConnection();
@@ -131,10 +115,4 @@ class MubiController {
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => new MubiController(), {
-    once: true,
-  });
-} else {
-  new MubiController();
-}
+new MubiController();

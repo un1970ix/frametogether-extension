@@ -9,12 +9,14 @@ import {
   type MessageType,
   type ServerMessage,
   type SyncConfig,
+  type VideoState,
 } from "../shared/types";
 import { isTrustedPort } from "./ports";
 
 const SESSION_KEY = "frametogether-extension:session";
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
+const RECONNECT_ATTEMPTS = 10;
 const HEARTBEAT_MS = 15_000;
 
 const storageArea = () => browser.storage.session ?? browser.storage.local;
@@ -23,39 +25,49 @@ interface SessionState {
   roomId?: string;
   isHost?: boolean;
   userName?: string;
+  tabId?: number;
 }
+
+type RoomRequest = { type: "Create" } | { type: "Join"; room_id: string };
+
+const answers = (
+  request: RoomRequest | null,
+  joined: { room_id: string; is_host: boolean },
+) =>
+  request?.type === "Create"
+    ? joined.is_host
+    : request?.room_id === joined.room_id;
 
 class SyncManager {
   private ws: WebSocket | null = null;
   private config: SyncConfig | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private ticker: ReturnType<typeof setInterval> | null = null;
   private activeTabId: number | null = null;
-  private deliberateClose = false;
-  private pendingCreate = false;
+  private pending: RoomRequest | null = null;
+  private joined = false;
+  private lastError: string | null = null;
+  private lastSync: VideoState | null = null;
+  private readonly ready: Promise<void>;
 
   constructor() {
-    void this.init();
-  }
-
-  private async init() {
-    const saved = await browser.storage.sync.get(["serverUrl"]);
-    if (typeof saved.serverUrl === "string") {
-      const parsed = normalizeServerUrl(saved.serverUrl);
-      if (parsed.ok) this.config = { serverUrl: parsed.url };
-    }
-
-    const session = await this.loadSession();
-    if (this.config && session?.roomId) {
-      this.config = { ...this.config, ...session };
-    }
+    this.ready = this.restore().catch(() => undefined);
 
     browser.runtime.onMessage.addListener(
       (message: unknown, sender: browser.Runtime.MessageSender) => {
-        const msg = message as { type?: unknown; state?: unknown } | null;
+        const msg = message as {
+          type?: unknown;
+          state?: unknown;
+          fresh?: unknown;
+        } | null;
         if (msg?.type === "TEST") return Promise.resolve({ status: "ok" });
-        if (msg?.type === "VIDEO_STATE") this.receiveVideoState(msg.state, sender);
+        if (msg?.type === "VIDEO_STATE") {
+          const fresh = msg.fresh === true;
+          void this.ready.then(() =>
+            this.receiveVideoState(msg.state, fresh, sender),
+          );
+        }
         return Promise.resolve();
       },
     );
@@ -65,22 +77,48 @@ class SyncManager {
         port.disconnect();
         return;
       }
-      port.onMessage.addListener((msg) => void this.handleCommand(msg, port));
+      port.onMessage.addListener(
+        (msg) => void this.ready.then(() => this.handleCommand(msg, port)),
+      );
     });
-
-    if (this.config?.roomId) this.connect();
   }
 
-  private receiveVideoState(
+  private async restore() {
+    const saved = await browser.storage.sync.get(["serverUrl"]);
+    if (typeof saved.serverUrl !== "string") return;
+    const parsed = normalizeServerUrl(saved.serverUrl);
+    if (!parsed.ok) return;
+    this.config = { serverUrl: parsed.url };
+
+    const session = await this.loadSession();
+    if (!session?.roomId) return;
+    const { tabId, ...room } = session;
+    this.config = { ...this.config, ...room };
+    this.activeTabId = typeof tabId === "number" ? tabId : null;
+    this.connect();
+  }
+
+  private async receiveVideoState(
     state: unknown,
+    fresh: boolean,
     sender: browser.Runtime.MessageSender,
   ) {
-    if (sender.tab?.id === undefined || !isMubiUrl(sender.tab.url)) return;
+    const tab = sender.tab;
+    if (tab?.id === undefined || !isMubiUrl(tab.url)) return;
     if (!isVideoState(state)) return;
 
-    this.activeTabId = sender.tab.id;
+    if (tab.id !== this.activeTabId) {
+      const current = this.activeTabId;
+      if (await this.readTab()) return;
+      if (this.activeTabId !== current) return;
+      this.activeTabId = tab.id;
+      await this.saveSession();
+    }
+    if (!this.joined) return;
     if (this.config?.isHost) {
       this.send({ type: "State", time: state.time, paused: state.paused });
+    } else if (fresh && this.lastSync) {
+      await this.applyToTab(this.lastSync.time, this.lastSync.paused);
     }
   }
 
@@ -108,6 +146,7 @@ class SyncManager {
           roomId: this.config.roomId,
           isHost: this.config.isHost,
           userName: this.config.userName,
+          tabId: this.activeTabId ?? undefined,
         } satisfies SessionState,
       });
     } catch {
@@ -117,23 +156,33 @@ class SyncManager {
 
   private async handleCommand(raw: unknown, port: browser.Runtime.Port) {
     if (typeof raw !== "object" || raw === null) return;
-    const msg = raw as { type?: unknown; roomId?: unknown; url?: unknown };
+    const msg = raw as {
+      type?: unknown;
+      roomId?: unknown;
+      url?: unknown;
+      tabId?: unknown;
+    };
 
     switch (msg.type) {
       case "CREATE_ROOM":
-        this.createRoom();
+        this.request({ type: "Create" }, msg.tabId);
         break;
-      case "JOIN_ROOM":
-        if (typeof msg.roomId === "string") this.joinRoom(msg.roomId);
+      case "JOIN_ROOM": {
+        const roomId = typeof msg.roomId === "string" ? msg.roomId.trim() : "";
+        if (roomId && roomId.length <= MAX_ROOM_ID_LENGTH) {
+          this.request({ type: "Join", room_id: roomId }, msg.tabId);
+        }
         break;
+      }
       case "LEAVE_ROOM":
         await this.leaveRoom();
         break;
       case "GET_STATUS":
         port.postMessage({
           type: "STATUS",
-          connected: this.isOpen(),
+          connected: this.joined,
           config: this.config,
+          error: this.lastError,
         });
         break;
       case "SET_SERVER":
@@ -152,6 +201,14 @@ class SyncManager {
     this.config = { serverUrl: parsed.url };
     await browser.storage.sync.set({ serverUrl: parsed.url });
     this.broadcastStatus();
+  }
+
+  private request(request: RoomRequest, tabId: unknown) {
+    if (!this.config) return;
+    if (typeof tabId === "number") this.activeTabId = tabId;
+    this.lastError = null;
+    this.pending = request;
+    if (!this.send(request)) this.connect();
   }
 
   private isOpen() {
@@ -173,31 +230,26 @@ class SyncManager {
       return;
     }
 
-    this.deliberateClose = false;
-
     let socket: WebSocket;
     try {
       socket = new WebSocket(`${this.config.serverUrl}/sync`);
     } catch {
-      this.scheduleReconnect();
+      this.dropped();
       return;
     }
     this.ws = socket;
+    this.startTicker();
 
     socket.onopen = () => {
       this.reconnectAttempts = 0;
-      this.startHeartbeat();
-      if (this.pendingCreate) {
-        this.pendingCreate = false;
-        this.send({ type: "Create" });
-      } else if (this.config?.roomId) {
-        this.send({ type: "Join", room_id: this.config.roomId });
+      if (!this.pending && this.config?.roomId) {
+        this.pending = { type: "Join", room_id: this.config.roomId };
       }
-      this.broadcastStatus();
+      if (this.pending) this.send(this.pending);
     };
 
     socket.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
+      if (this.ws !== socket || typeof event.data !== "string") return;
       let raw: unknown;
       try {
         raw = JSON.parse(event.data);
@@ -209,24 +261,43 @@ class SyncManager {
     };
 
     socket.onclose = () => {
-      this.stopHeartbeat();
-      if (this.ws === socket) this.ws = null;
-      this.broadcastStatus();
-      if (!this.deliberateClose && this.config?.roomId) this.scheduleReconnect();
+      if (this.ws === socket) this.dropped();
     };
   }
 
-  private async leaveRoom() {
-    this.deliberateClose = true;
-    this.pendingCreate = false;
+  private dropped() {
+    this.ws = null;
+    this.joined = false;
+    this.broadcastStatus();
+    if (this.config?.roomId) {
+      this.scheduleReconnect();
+      return;
+    }
+    this.stopTicker();
+    if (this.pending) {
+      this.pending = null;
+      this.broadcastError("Could not connect to the server.");
+    }
+  }
+
+  private disconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.reconnectAttempts = 0;
+    this.stopTicker();
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+  }
 
+  private async leaveRoom() {
     this.send({ type: "Leave" });
-    this.stopHeartbeat();
-    this.ws?.close();
-    this.ws = null;
+    this.disconnect();
+    this.pending = null;
+    this.joined = false;
+    this.lastSync = null;
 
     if (this.config) this.config = { serverUrl: this.config.serverUrl };
     await this.saveSession();
@@ -235,6 +306,12 @@ class SyncManager {
 
   private scheduleReconnect() {
     if (this.reconnectTimer || !this.config?.roomId) return;
+    if (this.reconnectAttempts >= RECONNECT_ATTEMPTS) {
+      void this.leaveRoom().then(() =>
+        this.broadcastError("Lost connection to the server."),
+      );
+      return;
+    }
     const backoff = Math.min(
       RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
       RECONNECT_MAX_MS,
@@ -249,41 +326,22 @@ class SyncManager {
     );
   }
 
-  private createRoom() {
-    this.deliberateClose = false;
-    if (!this.send({ type: "Create" })) {
-      this.pendingCreate = true;
-      this.connect();
-    }
-  }
-
-  private joinRoom(roomId: string) {
-    if (!this.config) return;
-    const trimmed = roomId.trim();
-    if (!trimmed || trimmed.length > MAX_ROOM_ID_LENGTH) return;
-
-    this.config = { ...this.config, roomId: trimmed };
-    this.deliberateClose = false;
-    if (!this.send({ type: "Join", room_id: trimmed })) this.connect();
-  }
-
   private async handleServerMessage(msg: ServerMessage) {
     switch (msg.type) {
-      case "RoomCreated":
-        if (this.config) this.config = { ...this.config, roomId: msg.room_id };
-        break;
-
       case "RoomJoined":
-        if (this.config) {
-          this.config = {
-            ...this.config,
-            roomId: msg.room_id,
-            isHost: msg.is_host,
-            userName: msg.your_name,
-          };
-        }
+        if (!this.config) break;
+        if (answers(this.pending, msg)) this.pending = null;
+        this.joined = true;
+        this.lastSync = null;
+        this.config = {
+          ...this.config,
+          roomId: msg.room_id,
+          isHost: msg.is_host,
+          userName: msg.your_name,
+        };
         await this.saveSession();
         this.broadcastStatus();
+        if (msg.is_host) await this.reportState();
         break;
 
       case "HostChanged":
@@ -291,14 +349,17 @@ class SyncManager {
           this.config = { ...this.config, isHost: true };
           await this.saveSession();
           this.broadcastStatus();
+          await this.reportState();
         }
         break;
 
       case "Sync":
+        this.lastSync = { time: msg.time, paused: msg.paused };
         if (!this.config?.isHost) await this.applyToTab(msg.time, msg.paused);
         break;
 
       case "Error":
+        if (this.pending) await this.leaveRoom();
         this.broadcastError(msg.message);
         break;
 
@@ -309,27 +370,46 @@ class SyncManager {
     }
   }
 
+  private async readTab(): Promise<VideoState | null> {
+    if (this.activeTabId === null) return null;
+    try {
+      const state: unknown = await browser.tabs.sendMessage(this.activeTabId, {
+        type: "GET_STATE",
+      } satisfies MessageType);
+      return isVideoState(state) ? state : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async reportState() {
+    const state = await this.readTab();
+    if (state) this.send({ type: "State", time: state.time, paused: state.paused });
+  }
+
   private async applyToTab(time: number, paused: boolean) {
     if (this.activeTabId === null || !isPlaybackTime(time)) return;
     try {
       await browser.tabs.sendMessage(this.activeTabId, {
         type: "APPLY_STATE",
         state: { time, paused },
-      } as MessageType);
+      } satisfies MessageType);
     } catch {
       this.activeTabId = null;
     }
   }
 
   private broadcastStatus() {
+    this.lastError = null;
     this.post({
       type: "CONNECTION_STATUS",
-      connected: this.isOpen(),
+      connected: this.joined,
       config: this.config ?? undefined,
     });
   }
 
   private broadcastError(message: string) {
+    this.lastError = message;
     this.post({ type: "ERROR", message });
   }
 
@@ -337,16 +417,17 @@ class SyncManager {
     browser.runtime.sendMessage(message).catch(() => {});
   }
 
-  private startHeartbeat() {
-    this.stopHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      if (!this.send({ type: "Heartbeat" })) this.stopHeartbeat();
+  private startTicker() {
+    if (this.ticker) return;
+    this.ticker = setInterval(() => {
+      this.send({ type: "Heartbeat" });
+      browser.runtime.getPlatformInfo().catch(() => {});
     }, HEARTBEAT_MS);
   }
 
-  private stopHeartbeat() {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = null;
+  private stopTicker() {
+    if (this.ticker) clearInterval(this.ticker);
+    this.ticker = null;
   }
 }
 
