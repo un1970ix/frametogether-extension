@@ -17,8 +17,9 @@ export interface Participant {
 
 export type MessageType =
   | { type: "TEST" }
-  | { type: "VIDEO_STATE"; state: VideoState }
+  | { type: "VIDEO_STATE"; state: VideoState; fresh?: boolean }
   | { type: "APPLY_STATE"; state: VideoState }
+  | { type: "GET_STATE" }
   | { type: "CONNECTION_STATUS"; connected: boolean; config?: SyncConfig }
   | { type: "ERROR"; message: string };
 

@@ -16,21 +16,24 @@ class PopupUI {
   private connected = false;
   private config: SyncConfig | null = null;
   private error: string | null = null;
+  private tabId: number | undefined;
 
   constructor() {
-    void this.init();
+    this.init();
   }
 
-  private async init() {
+  private init() {
     this.port.onMessage.addListener((message: unknown) => {
       const msg = message as {
         type?: unknown;
         connected?: unknown;
         config?: unknown;
+        error?: unknown;
       } | null;
       if (msg?.type !== "STATUS") return;
       this.connected = msg.connected === true;
       this.config = (msg.config as SyncConfig) ?? null;
+      this.error = typeof msg.error === "string" ? msg.error : null;
       void this.render();
     });
 
@@ -49,7 +52,6 @@ class PopupUI {
     });
 
     this.port.postMessage({ type: "GET_STATUS" });
-    await this.render();
   }
 
   private reset() {
@@ -63,7 +65,7 @@ class PopupUI {
   }
 
   private command(type: string) {
-    return () => this.port.postMessage({ type });
+    return () => this.port.postMessage({ type, tabId: this.tabId });
   }
 
   private async render() {
@@ -72,14 +74,16 @@ class PopupUI {
       currentWindow: true,
     });
     if (!isMubiUrl(tab?.url)) return this.renderNotOnMubi();
+    this.tabId = tab?.id;
 
     this.reset();
     if (this.error) this.note("error", `⚠️ ${this.error}`);
     if (!this.config?.serverUrl) return this.renderNoServer();
 
-    return this.connected && this.config.roomId
+    if (!this.config.roomId) return this.renderDisconnected();
+    return this.connected
       ? this.renderConnected(this.config)
-      : this.renderDisconnected();
+      : this.renderReconnecting();
   }
 
   private renderNoServer() {
@@ -113,7 +117,7 @@ class PopupUI {
         await navigator.clipboard.writeText(config.roomId ?? "");
         copyBtn.textContent = "Copied!";
       } catch {
-        copyBtn.textContent = "Copy failed";
+        copyBtn.textContent = "Copy failed.";
       }
       setTimeout(() => {
         copyBtn.textContent = "Copy Room ID";
@@ -123,6 +127,13 @@ class PopupUI {
     this.content.append(
       button("leaveBtn", "danger", "Leave Room", this.command("LEAVE_ROOM")),
       copyBtn,
+    );
+  }
+
+  private renderReconnecting() {
+    this.note("disconnected", "🟡 Reconnecting.");
+    this.content.append(
+      button("leaveBtn", "danger", "Leave Room", this.command("LEAVE_ROOM")),
     );
   }
 
@@ -137,7 +148,9 @@ class PopupUI {
     });
     const join = () => {
       const roomId = roomInput.value.trim();
-      if (roomId) this.port.postMessage({ type: "JOIN_ROOM", roomId });
+      if (roomId) {
+        this.port.postMessage({ type: "JOIN_ROOM", roomId, tabId: this.tabId });
+      }
     };
     roomInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") join();
