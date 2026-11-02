@@ -4,6 +4,12 @@ on:
   push:
     tags: [ '*.*.*' ]
   workflow_dispatch:
+    inputs:
+      store:
+        description: Choose the store to publish.
+        type: choice
+        options: [both, chrome, firefox]
+        default: both
 
 permissions:
   contents: read
@@ -11,8 +17,10 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: store-release
     env:
+      CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID }}
       CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID }}
       CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
       CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
@@ -21,13 +29,33 @@ jobs:
       AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set Up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
 
       - name: Set Up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.4
 
       - name: Install Dependencies
         run: bun install --frozen-lockfile
+
+      - name: Validate Store Configuration
+        run: bun scripts/publish-chrome.ts --check
+
+      - name: Audit Dependencies
+        id: audit
+        continue-on-error: true
+        run: bun audit --audit-level=moderate
+
+      - name: Report Audit Failure
+        if: steps.audit.outcome == 'failure'
+        run: echo '::warning::Dependency audit failed. Review the audit output.'
 
       - name: Typecheck
         run: bun run typecheck
@@ -56,59 +84,18 @@ jobs:
         run: |
           set -euo pipefail
           bun run build:firefox
-          (cd dist && zip -qr ../firefox.zip .)
 
       - name: Lint Firefox Package
         run: bun run lint:ext
 
       - name: Publish to Chrome Web Store
-        if: env.CHROME_CLIENT_ID != ''
-        run: |
-          set -euo pipefail
-          token="$(curl -sf -X POST https://oauth2.googleapis.com/token \
-            -d client_id="$CHROME_CLIENT_ID" \
-            -d client_secret="$CHROME_CLIENT_SECRET" \
-            -d refresh_token="$CHROME_REFRESH_TOKEN" \
-            -d grant_type=refresh_token \
-            | bun --print 'JSON.parse(require("fs").readFileSync(0,"utf8")).access_token')"
-          if [ -z "$token" ] || [ "$token" = "undefined" ]; then
-            echo "could not obtain an access token"
-            exit 1
-          fi
-
-          upload="$(curl -sf -X PUT \
-            -H "Authorization: Bearer $token" \
-            -H "x-goog-api-version: 2" \
-            -T chrome.zip \
-            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$CHROME_EXTENSION_ID")"
-          state="$(printf '%s' "$upload" | bun --print 'JSON.parse(require("fs").readFileSync(0,"utf8")).uploadState')"
-          echo "upload state $state"
-          if [ "$state" != "SUCCESS" ]; then
-            printf '%s\n' "$upload"
-            exit 1
-          fi
-
-          curl -sf -X POST \
-            -H "Authorization: Bearer $token" \
-            -H "x-goog-api-version: 2" \
-            -H "Content-Length: 0" \
-            "https://www.googleapis.com/chromewebstore/v1.1/items/$CHROME_EXTENSION_ID/publish"
-          echo "submitted to the Chrome Web Store"
-
-      - name: Skip Chrome Web Store
-        if: env.CHROME_CLIENT_ID == ''
-        run: echo "Chrome secrets are not configured, skipping"
+        id: chrome
+        if: github.event_name == 'push' || inputs.store == 'both' || inputs.store == 'chrome'
+        run: bun scripts/publish-chrome.ts
 
       - name: Publish to Firefox Add-ons
-        if: env.AMO_JWT_ISSUER != ''
+        if: ${{ !cancelled() && (success() || steps.chrome.outcome == 'failure') && (github.event_name == 'push' || inputs.store == 'both' || inputs.store == 'firefox') }}
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-        run: |
-          set -euo pipefail
-          bun run build:firefox
-          bun run sign:ext
-
-      - name: Skip Firefox Add-ons
-        if: env.AMO_JWT_ISSUER == ''
-        run: echo "AMO secrets are not configured, skipping"
+        run: bun run sign:ext

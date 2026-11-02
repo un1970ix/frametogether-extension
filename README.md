@@ -14,6 +14,8 @@ Version 2 requires frametogether-server 0.2.0 or later. It sends a `Leave` messa
 
 ## Build
 
+Use the Bun version in `.bun-version`.
+
 Install dependencies.
 
 ```bash
@@ -48,3 +50,17 @@ Load the `dist` directory as an unpacked extension.
 bun run typecheck
 bun test
 ```
+
+## Publishing
+
+The publishing workflow requires the `store-release` environment. Configure
+`CHROME_PUBLISHER_ID` and `CHROME_EXTENSION_ID` as GitHub Actions variables, and
+`CHROME_CLIENT_ID`, `CHROME_CLIENT_SECRET`, `CHROME_REFRESH_TOKEN`,
+`AMO_JWT_ISSUER`, and `AMO_JWT_SECRET` as secrets. Find the publisher ID in the
+Chrome Web Store developer dashboard. Both stores must be configured before
+either upload starts. Dependency audits report findings and errors without
+blocking checks or publishing.
+
+Use a manual workflow run to retry either store independently. A Chrome
+publication failure does not prevent the validated Firefox package from being
+submitted.
